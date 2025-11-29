@@ -17,6 +17,13 @@
       margin: 0;
       font-family: 'Roboto', sans-serif;
     }
+    .pulse {
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
   </style>
 </head>
 <body>
@@ -30,11 +37,12 @@
   <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
 
   <script type="module">
-    const { createApp, ref, reactive, onMounted, onUnmounted } = Vue;
+    const { createApp, ref, reactive, onMounted, onUnmounted, computed } = Vue;
     const { createVuetify } = Vuetify;
 
     // API設定
     const API_BASE_URL = 'http://localhost:8000';
+    const POLL_INTERVAL = 2000; // 2秒ごと
 
     const apiClient = axios.create({
       baseURL: API_BASE_URL,
@@ -268,9 +276,40 @@
     const TaskList = {
       template: `
         <v-card elevation="2">
-          <v-card-title class="bg-secondary">
+          <v-card-title class="bg-secondary d-flex align-center">
             <v-icon class="mr-2">mdi-format-list-bulleted</v-icon>
             ダウンロードタスク
+            <v-spacer></v-spacer>
+            <div class="d-flex align-center ga-2">
+              <v-chip
+                v-if="isPolling"
+                size="small"
+                color="success"
+                variant="flat"
+              >
+                <v-icon start size="small" :class="{ pulse: isPolling }">mdi-sync</v-icon>
+                自動更新
+              </v-chip>
+              <v-chip
+                v-if="lastUpdate"
+                size="small"
+                variant="text"
+              >
+                {{ lastUpdateText }}
+              </v-chip>
+              <v-btn
+                size="small"
+                :icon="isPolling ? 'mdi-pause' : 'mdi-play'"
+                :color="isPolling ? 'warning' : 'success'"
+                @click="togglePolling"
+              ></v-btn>
+              <v-btn
+                size="small"
+                icon="mdi-refresh"
+                color="primary"
+                @click="pollAllTasksNow"
+              ></v-btn>
+            </div>
           </v-card-title>
           <v-card-text class="pa-0">
             <v-list v-if="tasks.length > 0">
@@ -296,6 +335,9 @@
                   </v-chip>
                   <span v-if="task.file_size" class="ml-2">
                     {{ formatFileSize(task.file_size) }}
+                  </span>
+                  <span v-if="task.progress > 0 && task.status === 'downloading'" class="ml-2">
+                    {{ Math.round(task.progress) }}%
                   </span>
                 </v-list-item-subtitle>
 
@@ -366,6 +408,17 @@
       emits: ['delete-task', 'download-file'],
       setup(props, { emit }) {
         let pollInterval = null;
+        const isPolling = ref(true);
+        const lastUpdate = ref(null);
+
+        const lastUpdateText = computed(() => {
+          if (!lastUpdate.value) return '';
+          const now = new Date();
+          const diff = Math.floor((now - lastUpdate.value) / 1000);
+          if (diff < 60) return `${diff}秒前`;
+          if (diff < 3600) return `${Math.floor(diff / 60)}分前`;
+          return `${Math.floor(diff / 3600)}時間前`;
+        });
 
         const getStatusColor = (status) => {
           const colors = {
@@ -445,36 +498,73 @@
             if (task) {
               Object.assign(task, status);
             }
+            lastUpdate.value = new Date();
           } catch (error) {
             console.error('ステータスの取得に失敗:', error);
           }
         };
 
         const pollAllTasks = () => {
-          props.tasks.forEach(task => {
-            if (task.status === 'downloading' || task.status === 'queued') {
-              pollTaskStatus(task.task_id);
-            }
+          if (!isPolling.value) return;
+          
+          const activeTasks = props.tasks.filter(
+            task => task.status === 'downloading' || task.status === 'queued'
+          );
+          
+          if (activeTasks.length === 0) return;
+          
+          activeTasks.forEach(task => {
+            pollTaskStatus(task.task_id);
           });
         };
 
+        const pollAllTasksNow = () => {
+          props.tasks.forEach(task => {
+            pollTaskStatus(task.task_id);
+          });
+        };
+
+        const togglePolling = () => {
+          isPolling.value = !isPolling.value;
+          if (isPolling.value) {
+            startPolling();
+          } else {
+            stopPolling();
+          }
+        };
+
+        const startPolling = () => {
+          if (pollInterval) return;
+          pollInterval = setInterval(pollAllTasks, POLL_INTERVAL);
+        };
+
+        const stopPolling = () => {
+          if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+          }
+        };
+
         onMounted(() => {
-          pollInterval = setInterval(pollAllTasks, 2000);
+          startPolling();
         });
 
         onUnmounted(() => {
-          if (pollInterval) {
-            clearInterval(pollInterval);
-          }
+          stopPolling();
         });
 
         return {
+          isPolling,
+          lastUpdate,
+          lastUpdateText,
           getStatusColor,
           getStatusText,
           formatFileSize,
           handleDownload,
           handleCancel,
-          handleDelete
+          handleDelete,
+          togglePolling,
+          pollAllTasksNow
         };
       }
     };
