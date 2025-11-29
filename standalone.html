@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="YouTube動画/音声ダウンローダー">
+  <meta name="theme-color" content="#1976D2">
+  <title>YouTube Downloader</title>
+  
+  <!-- Vuetify CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/vuetify@3.5.0/dist/vuetify.min.css" rel="stylesheet">
+  <!-- Material Design Icons -->
+  <link href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.0/css/materialdesignicons.min.css" rel="stylesheet">
+  
+  <style>
+    body {
+      margin: 0;
+      font-family: 'Roboto', sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- Vue 3 -->
+  <script src="https://cdn.jsdelivr.net/npm/vue@3.4.0/dist/vue.global.prod.js"></script>
+  <!-- Vuetify -->
+  <script src="https://cdn.jsdelivr.net/npm/vuetify@3.5.0/dist/vuetify.min.js"></script>
+  <!-- Axios -->
+  <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+
+  <script type="module">
+    const { createApp, ref, reactive, onMounted, onUnmounted } = Vue;
+    const { createVuetify } = Vuetify;
+
+    // API設定
+    const API_BASE_URL = 'http://localhost:8000';
+
+    const apiClient = axios.create({
+      baseURL: API_BASE_URL,
+      timeout: 30000,
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    // APIラッパー
+    const api = {
+      async getVideoInfo(url) {
+        const response = await apiClient.get('/api/info', { params: { url } });
+        return response.data;
+      },
+      async createDownload(downloadRequest) {
+        const response = await apiClient.post('/api/download', downloadRequest);
+        return response.data;
+      },
+      async getTaskStatus(taskId) {
+        const response = await apiClient.get(`/api/status/${taskId}`);
+        return response.data;
+      },
+      async downloadFile(taskId) {
+        const response = await apiClient.get(`/api/download/${taskId}`, { responseType: 'blob' });
+        return response.data;
+      },
+      async cancelTask(taskId) {
+        const response = await apiClient.post(`/api/cancel/${taskId}`);
+        return response.data;
+      },
+      async deleteTask(taskId) {
+        const response = await apiClient.delete(`/api/task/${taskId}`);
+        return response.data;
+      }
+    };
+
+    // DownloadForm コンポーネント
+    const DownloadForm = {
+      template: `
+        <v-card elevation="2">
+          <v-card-title class="bg-primary">
+            <v-icon class="mr-2">mdi-download</v-icon>
+            新規ダウンロード
+          </v-card-title>
+          <v-card-text class="pt-4">
+            <v-form ref="formRef" @submit.prevent="submitDownload">
+              <v-text-field
+                v-model="form.url"
+                label="動画URL"
+                placeholder="https://www.youtube.com/watch?v=..."
+                prepend-icon="mdi-link"
+                variant="outlined"
+                clearable
+                @blur="fetchVideoInfo"
+              ></v-text-field>
+
+              <v-card v-if="videoInfo" class="mb-4" variant="outlined">
+                <v-row no-gutters>
+                  <v-col cols="12" md="4">
+                    <v-img :src="videoInfo.thumbnail" height="200" cover></v-img>
+                  </v-col>
+                  <v-col cols="12" md="8">
+                    <v-card-text>
+                      <div class="text-h6">{{ videoInfo.title }}</div>
+                      <div class="text-caption mt-2">
+                        <v-chip size="small" class="mr-2">
+                          <v-icon start size="small">mdi-account</v-icon>
+                          {{ videoInfo.uploader }}
+                        </v-chip>
+                        <v-chip size="small" class="mr-2">
+                          <v-icon start size="small">mdi-eye</v-icon>
+                          {{ formatNumber(videoInfo.view_count) }}
+                        </v-chip>
+                        <v-chip size="small">
+                          <v-icon start size="small">mdi-clock-outline</v-icon>
+                          {{ formatDuration(videoInfo.duration) }}
+                        </v-chip>
+                      </div>
+                    </v-card-text>
+                  </v-col>
+                </v-row>
+              </v-card>
+
+              <v-select
+                v-model="form.format"
+                :items="formatOptions"
+                label="フォーマット"
+                prepend-icon="mdi-video"
+                variant="outlined"
+              ></v-select>
+
+              <v-select
+                v-if="form.format === 'mp4' && videoInfo"
+                v-model="form.quality"
+                :items="videoInfo.available_qualities"
+                label="品質"
+                prepend-icon="mdi-quality-high"
+                variant="outlined"
+              ></v-select>
+
+              <v-text-field
+                v-if="form.format === 'mp3'"
+                v-model="form.mp3_title"
+                label="MP3タイトル (オプション)"
+                prepend-icon="mdi-music"
+                variant="outlined"
+                clearable
+              ></v-text-field>
+
+              <v-checkbox
+                v-if="form.format === 'mp3'"
+                v-model="form.embed_thumbnail"
+                label="サムネイルを埋め込む"
+                color="primary"
+              ></v-checkbox>
+
+              <v-btn
+                type="submit"
+                color="primary"
+                size="large"
+                block
+                :loading="loading"
+                :disabled="!form.url"
+              >
+                <v-icon start>mdi-download</v-icon>
+                ダウンロード開始
+              </v-btn>
+            </v-form>
+          </v-card-text>
+        </v-card>
+      `,
+      emits: ['download-created'],
+      setup(props, { emit }) {
+        const formRef = ref(null);
+        const loading = ref(false);
+        const videoInfo = ref(null);
+
+        const form = reactive({
+          url: '',
+          format: 'mp4',
+          quality: null,
+          mp3_title: '',
+          embed_thumbnail: false
+        });
+
+        const formatOptions = [
+          { title: 'MP4 (動画)', value: 'mp4' },
+          { title: 'MP3 (音声)', value: 'mp3' },
+          { title: 'WEBM', value: 'webm' },
+          { title: 'M4A (音声)', value: 'm4a' }
+        ];
+
+        const fetchVideoInfo = async () => {
+          if (!form.url || !form.url.match(/^https?:\/\/.+/)) return;
+
+          try {
+            loading.value = true;
+            const info = await api.getVideoInfo(form.url);
+            videoInfo.value = info;
+            if (info.available_qualities && info.available_qualities.length > 0) {
+              form.quality = info.available_qualities[0];
+            }
+          } catch (error) {
+            console.error('動画情報の取得に失敗:', error);
+          } finally {
+            loading.value = false;
+          }
+        };
+
+        const submitDownload = async () => {
+          if (!form.url) return;
+
+          try {
+            loading.value = true;
+            const task = await api.createDownload({
+              url: form.url,
+              format: form.format,
+              quality: form.quality,
+              mp3_title: form.mp3_title || null,
+              embed_thumbnail: form.embed_thumbnail
+            });
+
+            emit('download-created', {
+              ...task,
+              title: videoInfo.value?.title,
+              thumbnail_url: videoInfo.value?.thumbnail
+            });
+
+            form.url = '';
+            form.format = 'mp4';
+            form.quality = null;
+            form.mp3_title = '';
+            form.embed_thumbnail = false;
+            videoInfo.value = null;
+          } catch (error) {
+            console.error('ダウンロードの作成に失敗:', error);
+            alert('ダウンロードの作成に失敗しました。URLを確認してください。');
+          } finally {
+            loading.value = false;
+          }
+        };
+
+        const formatNumber = (num) => {
+          return new Intl.NumberFormat('ja-JP').format(num);
+        };
+
+        const formatDuration = (seconds) => {
+          const h = Math.floor(seconds / 3600);
+          const m = Math.floor((seconds % 3600) / 60);
+          const s = seconds % 60;
+          if (h > 0) {
+            return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+          }
+          return `${m}:${String(s).padStart(2, '0')}`;
+        };
+
+        return {
+          formRef,
+          loading,
+          videoInfo,
+          form,
+          formatOptions,
+          fetchVideoInfo,
+          submitDownload,
+          formatNumber,
+          formatDuration
+        };
+      }
+    };
+
+    // TaskList コンポーネント
+    const TaskList = {
+      template: `
+        <v-card elevation="2">
+          <v-card-title class="bg-secondary">
+            <v-icon class="mr-2">mdi-format-list-bulleted</v-icon>
+            ダウンロードタスク
+          </v-card-title>
+          <v-card-text class="pa-0">
+            <v-list v-if="tasks.length > 0">
+              <v-list-item
+                v-for="task in tasks"
+                :key="task.task_id"
+                class="border-b"
+              >
+                <template v-slot:prepend>
+                  <v-avatar size="80" rounded>
+                    <v-img v-if="task.thumbnail_url" :src="task.thumbnail_url" cover></v-img>
+                    <v-icon v-else size="40">mdi-video</v-icon>
+                  </v-avatar>
+                </template>
+
+                <v-list-item-title class="text-wrap">
+                  {{ task.title || 'ダウンロード中...' }}
+                </v-list-item-title>
+                
+                <v-list-item-subtitle>
+                  <v-chip :color="getStatusColor(task.status)" size="small" class="mt-2">
+                    {{ getStatusText(task.status) }}
+                  </v-chip>
+                  <span v-if="task.file_size" class="ml-2">
+                    {{ formatFileSize(task.file_size) }}
+                  </span>
+                </v-list-item-subtitle>
+
+                <v-progress-linear
+                  v-if="task.status === 'downloading' || task.status === 'queued'"
+                  :model-value="task.progress"
+                  color="primary"
+                  height="8"
+                  rounded
+                  class="mt-2"
+                ></v-progress-linear>
+
+                <v-alert
+                  v-if="task.status === 'failed' && task.error_message"
+                  type="error"
+                  density="compact"
+                  class="mt-2"
+                >
+                  {{ task.error_message }}
+                </v-alert>
+
+                <template v-slot:append>
+                  <div class="d-flex flex-column ga-2">
+                    <v-btn
+                      v-if="task.status === 'completed'"
+                      color="primary"
+                      variant="tonal"
+                      size="small"
+                      @click="handleDownload(task)"
+                    >
+                      <v-icon start>mdi-download</v-icon>
+                      ダウンロード
+                    </v-btn>
+
+                    <v-btn
+                      v-if="task.status === 'downloading' || task.status === 'queued'"
+                      color="warning"
+                      variant="tonal"
+                      size="small"
+                      @click="handleCancel(task.task_id)"
+                    >
+                      <v-icon start>mdi-cancel</v-icon>
+                      キャンセル
+                    </v-btn>
+
+                    <v-btn
+                      color="error"
+                      variant="tonal"
+                      size="small"
+                      @click="handleDelete(task.task_id)"
+                    >
+                      <v-icon start>mdi-delete</v-icon>
+                      削除
+                    </v-btn>
+                  </div>
+                </template>
+              </v-list-item>
+            </v-list>
+
+            <v-card-text v-else class="text-center py-8">
+              <v-icon size="64" color="grey">mdi-download-off</v-icon>
+              <div class="text-h6 mt-4 text-grey">ダウンロードタスクがありません</div>
+            </v-card-text>
+          </v-card-text>
+        </v-card>
+      `,
+      props: ['tasks'],
+      emits: ['delete-task', 'download-file'],
+      setup(props, { emit }) {
+        let pollInterval = null;
+
+        const getStatusColor = (status) => {
+          const colors = {
+            queued: 'info',
+            downloading: 'primary',
+            completed: 'success',
+            failed: 'error',
+            cancelled: 'warning'
+          };
+          return colors[status] || 'grey';
+        };
+
+        const getStatusText = (status) => {
+          const texts = {
+            queued: '待機中',
+            downloading: 'ダウンロード中',
+            completed: '完了',
+            failed: '失敗',
+            cancelled: 'キャンセル済み'
+          };
+          return texts[status] || status;
+        };
+
+        const formatFileSize = (bytes) => {
+          if (!bytes) return '';
+          const units = ['B', 'KB', 'MB', 'GB'];
+          let size = bytes;
+          let unitIndex = 0;
+          while (size >= 1024 && unitIndex < units.length - 1) {
+            size /= 1024;
+            unitIndex++;
+          }
+          return `${size.toFixed(2)} ${units[unitIndex]}`;
+        };
+
+        const handleDownload = async (task) => {
+          try {
+            const blob = await api.downloadFile(task.task_id);
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = task.filename || `download_${task.task_id}`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            emit('download-file', task);
+          } catch (error) {
+            console.error('ダウンロードに失敗:', error);
+            alert('ファイルのダウンロードに失敗しました');
+          }
+        };
+
+        const handleCancel = async (taskId) => {
+          try {
+            await api.cancelTask(taskId);
+            await pollTaskStatus(taskId);
+          } catch (error) {
+            console.error('キャンセルに失敗:', error);
+          }
+        };
+
+        const handleDelete = async (taskId) => {
+          if (!confirm('このタスクを削除しますか?')) return;
+          try {
+            await api.deleteTask(taskId);
+            emit('delete-task', taskId);
+          } catch (error) {
+            console.error('削除に失敗:', error);
+          }
+        };
+
+        const pollTaskStatus = async (taskId) => {
+          try {
+            const status = await api.getTaskStatus(taskId);
+            const task = props.tasks.find(t => t.task_id === taskId);
+            if (task) {
+              Object.assign(task, status);
+            }
+          } catch (error) {
+            console.error('ステータスの取得に失敗:', error);
+          }
+        };
+
+        const pollAllTasks = () => {
+          props.tasks.forEach(task => {
+            if (task.status === 'downloading' || task.status === 'queued') {
+              pollTaskStatus(task.task_id);
+            }
+          });
+        };
+
+        onMounted(() => {
+          pollInterval = setInterval(pollAllTasks, 2000);
+        });
+
+        onUnmounted(() => {
+          if (pollInterval) {
+            clearInterval(pollInterval);
+          }
+        });
+
+        return {
+          getStatusColor,
+          getStatusText,
+          formatFileSize,
+          handleDownload,
+          handleCancel,
+          handleDelete
+        };
+      }
+    };
+
+    // メインアプリ
+    const App = {
+      template: `
+        <v-app>
+          <v-app-bar color="primary" dark elevation="2">
+            <v-app-bar-title>
+              <v-icon class="mr-2">mdi-youtube</v-icon>
+              YouTube Downloader
+            </v-app-bar-title>
+            <v-spacer></v-spacer>
+            <v-btn icon @click="toggleTheme">
+              <v-icon>{{ theme === 'light' ? 'mdi-weather-night' : 'mdi-weather-sunny' }}</v-icon>
+            </v-btn>
+          </v-app-bar>
+
+          <v-main>
+            <v-container>
+              <v-row>
+                <v-col cols="12">
+                  <download-form @download-created="addTask" />
+                </v-col>
+              </v-row>
+
+              <v-row>
+                <v-col cols="12">
+                  <task-list :tasks="tasks" @delete-task="deleteTask" @download-file="downloadFile" />
+                </v-col>
+              </v-row>
+            </v-container>
+          </v-main>
+
+          <v-snackbar v-model="snackbar.show" :color="snackbar.color" :timeout="3000">
+            {{ snackbar.message }}
+          </v-snackbar>
+        </v-app>
+      `,
+      components: {
+        'download-form': DownloadForm,
+        'task-list': TaskList
+      },
+      setup() {
+        const theme = ref('light');
+        const tasks = ref([]);
+        const snackbar = ref({
+          show: false,
+          message: '',
+          color: 'success'
+        });
+
+        const vuetify = Vuetify.useTheme();
+
+        const toggleTheme = () => {
+          theme.value = theme.value === 'light' ? 'dark' : 'light';
+          vuetify.global.name.value = theme.value;
+          localStorage.setItem('theme', theme.value);
+        };
+
+        const addTask = (task) => {
+          tasks.value.unshift(task);
+          showSnackbar('ダウンロードタスクを作成しました', 'success');
+        };
+
+        const deleteTask = (taskId) => {
+          tasks.value = tasks.value.filter(t => t.task_id !== taskId);
+          showSnackbar('タスクを削除しました', 'info');
+        };
+
+        const downloadFile = (task) => {
+          showSnackbar(`${task.title || 'ファイル'}のダウンロードを開始します`, 'success');
+        };
+
+        const showSnackbar = (message, color = 'success') => {
+          snackbar.value = {
+            show: true,
+            message,
+            color
+          };
+        };
+
+        onMounted(() => {
+          const savedTheme = localStorage.getItem('theme');
+          if (savedTheme) {
+            theme.value = savedTheme;
+            vuetify.global.name.value = savedTheme;
+          }
+        });
+
+        return {
+          theme,
+          tasks,
+          snackbar,
+          toggleTheme,
+          addTask,
+          deleteTask,
+          downloadFile
+        };
+      }
+    };
+
+    // Vuetify初期化
+    const vuetify = createVuetify({
+      theme: {
+        defaultTheme: 'light',
+        themes: {
+          light: {
+            colors: {
+              primary: '#1976D2',
+              secondary: '#424242',
+              accent: '#82B1FF',
+              error: '#FF5252',
+              info: '#2196F3',
+              success: '#4CAF50',
+              warning: '#FFC107'
+            }
+          },
+          dark: {
+            colors: {
+              primary: '#2196F3',
+              secondary: '#424242',
+              accent: '#FF4081',
+              error: '#FF5252',
+              info: '#2196F3',
+              success: '#4CAF50',
+              warning: '#FFC107'
+            }
+          }
+        }
+      }
+    });
+
+    // アプリ起動
+    createApp(App).use(vuetify).mount('#app');
+  </script>
+</body>
+</html>

@@ -23,12 +23,27 @@ Vue 3とVuetify 3を使用したYouTube動画/音声ダウンローダーのPWA�
 
 ## セットアップ
 
-### 前提条件
+### 方法1: スタンドアロン版 (ビルド不要)
+
+**最も簡単な方法です！**
+
+1. `standalone.html` をブラウザで開く
+2. API URLを環境に合わせて変更する場合は、HTMLファイル内の `API_BASE_URL` を編集
+
+```javascript
+const API_BASE_URL = 'http://localhost:8000'; // ← ここを変更
+```
+
+3. ブラウザで開いてすぐに使用可能！
+
+### 方法2: 開発版 (Vite使用)
+
+#### 前提条件
 
 - Node.js 18以上
 - npm または pnpm
 
-### インストール
+#### インストール
 
 ```bash
 # 依存関係のインストール
@@ -37,7 +52,7 @@ npm install
 pnpm install
 ```
 
-### 環境変数の設定
+#### 環境変数の設定
 
 `.env`ファイルを作成し、APIのベースURLを設定します:
 
@@ -45,7 +60,7 @@ pnpm install
 VITE_API_BASE_URL=http://localhost:8000
 ```
 
-### 開発サーバーの起動
+#### 開発サーバーの起動
 
 ```bash
 npm run dev
@@ -55,7 +70,7 @@ pnpm dev
 
 ブラウザで `http://localhost:3000` を開きます。
 
-### プロダクションビルド
+#### プロダクションビルド
 
 ```bash
 npm run build
@@ -65,7 +80,7 @@ pnpm build
 
 ビルドされたファイルは`dist`ディレクトリに出力されます。
 
-### プレビュー
+#### プレビュー
 
 ```bash
 npm run preview
@@ -78,7 +93,7 @@ pnpm preview
 このアプリケーションはPWA (Progressive Web App)として動作します:
 
 - **インストール可能**: ホーム画面に追加してネイティブアプリのように使用可能
-- **オフライン対応**: Service Workerによりオフラインでも基本機能が動作
+- **オフライン対応**: Service Workerによるキャッシュ
 - **自動更新**: 新しいバージョンが利用可能になると自動的に更新
 
 ## API仕様
@@ -98,6 +113,7 @@ pnpm preview
 
 ```
 .
+├── standalone.html       # ビルド不要のスタンドアロン版
 ├── src/
 │   ├── api/              # API通信ロジック
 │   │   └── index.js
@@ -123,6 +139,38 @@ pnpm preview
 5. 「ダウンロード開始」ボタンをクリック
 6. タスク一覧でダウンロード進行状況を確認
 7. 完了後、「ダウンロード」ボタンでファイルを保存
+
+## トラブルシューティング
+
+### モジュール解決エラーが出る場合
+
+```
+Uncaught TypeError: Failed to resolve module specifier "vue"
+```
+
+→ **解決方法**: `standalone.html` を使用するか、Vite開発サーバーを起動してください。
+
+```bash
+npm run dev
+```
+
+### CORS エラーが出る場合
+
+バックエンドAPIサーバーでCORSを許可する必要があります。
+
+FastAPIの場合:
+
+```python
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 本番環境では適切なオリジンを指定
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
 
 ## ライセンス
 
